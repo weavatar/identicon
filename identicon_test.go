@@ -45,7 +45,7 @@ func TestRenderProducesImage(t *testing.T) {
 
 func TestRenderWithEmptyData(t *testing.T) {
 	icon := New(300, 5, 5)
-	data := []byte{}
+	var data []byte
 
 	img := icon.Make(data)
 
@@ -64,8 +64,12 @@ func TestRenderIsDeterministic(t *testing.T) {
 	buf1 := new(bytes.Buffer)
 	buf2 := new(bytes.Buffer)
 
-	png.Encode(buf1, img1)
-	png.Encode(buf2, img2)
+	if err := png.Encode(buf1, img1); err != nil {
+		t.Fatalf("Failed to encode image 1: %v", err)
+	}
+	if err := png.Encode(buf2, img2); err != nil {
+		t.Fatalf("Failed to encode image 2: %v", err)
+	}
 
 	if !bytes.Equal(buf1.Bytes(), buf2.Bytes()) {
 		t.Error("Expected identical images for the same input data")
@@ -83,8 +87,12 @@ func TestDifferentInputsProduceDifferentImages(t *testing.T) {
 	buf1 := new(bytes.Buffer)
 	buf2 := new(bytes.Buffer)
 
-	png.Encode(buf1, img1)
-	png.Encode(buf2, img2)
+	if err := png.Encode(buf1, img1); err != nil {
+		t.Fatalf("Failed to encode image 1: %v", err)
+	}
+	if err := png.Encode(buf2, img2); err != nil {
+		t.Fatalf("Failed to encode image 2: %v", err)
+	}
 
 	if bytes.Equal(buf1.Bytes(), buf2.Bytes()) {
 		t.Error("Expected different images for different input data")

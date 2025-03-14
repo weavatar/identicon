@@ -1,4 +1,4 @@
-// Package identicon creates visual hashes of data as PNGs.
+// Package identicon generates identicons based on a hash.
 package identicon
 
 import (
@@ -12,7 +12,6 @@ import (
 
 // IdentIcon represents an identicon generator
 type IdentIcon struct {
-	key    []byte
 	sqSize int
 	rows   int
 	cols   int
