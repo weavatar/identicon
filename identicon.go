@@ -1,251 +1,140 @@
-// Package identicon generates identicons based on a hash.
+// Copyright 2021 The Gitea Authors. All rights reserved.
+// SPDX-License-Identifier: MIT
+
+// Copied and modified from https://github.com/issue9/identicon/ (MIT License)
+// Generate pseudo-random avatars by IP, E-mail, etc.
+
 package identicon
 
 import (
-	"hash"
-	"hash/fnv"
+	"crypto/sha256"
+	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
-	"math"
 )
 
-// IdentIcon represents an identicon generator
-type IdentIcon struct {
-	sqSize int
-	rows   int
-	cols   int
-	h      hash.Hash64
-	maxX   int
-	maxY   int
+const minImageSize = 16
+
+// Identicon is used to generate pseudo-random avatars
+type Identicon struct {
+	foreColors []color.Color
+	backColor  color.Color
+	size       int
+	rect       image.Rectangle
 }
 
-// New creates a new identicon renderer
-func New(size, rows, cols int) *IdentIcon {
-	return &IdentIcon{
-		sqSize: size / max(rows, cols),
-		rows:   rows,
-		cols:   cols,
-		h:      fnv.New64a(),
-		maxX:   size,
-		maxY:   size,
+// New returns an Identicon struct with the correct settings
+// size image size
+// back background color
+// fore all possible foreground colors. only one foreground color will be picked randomly for one image
+func New(size int, back color.Color, fore ...color.Color) (*Identicon, error) {
+	if len(fore) == 0 {
+		return nil, fmt.Errorf("foreground is not set")
 	}
+
+	if size < minImageSize {
+		return nil, fmt.Errorf("size %d is smaller than min size %d", size, minImageSize)
+	}
+
+	return &Identicon{
+		foreColors: fore,
+		backColor:  back,
+		size:       size,
+		rect:       image.Rect(0, 0, size, size),
+	}, nil
 }
 
-// Make creates an identicon image based on the input hash
-func (icon *IdentIcon) Make(hash []byte) image.Image {
-	icon.h.Reset()
-	if _, err := icon.h.Write(hash); err != nil {
-		panic(err)
+// Make generates an avatar by data
+func (i *Identicon) Make(data []byte) image.Image {
+	h := sha256.New()
+	h.Write(data)
+	sum := h.Sum(nil)
+
+	b1 := int(sum[0]+sum[1]+sum[2]) % len(blocks)
+	b2 := int(sum[3]+sum[4]+sum[5]) % len(blocks)
+	c := int(sum[6]+sum[7]+sum[8]) % len(centerBlocks)
+	b1Angle := int(sum[9]+sum[10]) % 4
+	b2Angle := int(sum[11]+sum[12]) % 4
+	foreColor := int(sum[11]+sum[12]+sum[15]) % len(i.foreColors)
+
+	return i.render(c, b1, b2, b1Angle, b2Angle, foreColor)
+}
+
+func (i *Identicon) render(c, b1, b2, b1Angle, b2Angle, foreColor int) image.Image {
+	p := image.NewPaletted(i.rect, []color.Color{i.backColor, i.foreColors[foreColor]})
+	drawBlocks(p, i.size, centerBlocks[c], blocks[b1], blocks[b2], b1Angle, b2Angle)
+	return p
+}
+
+/*
+# Algorithm
+
+Origin: An image is splitted into 9 areas
+
+```
+  -------------
+  | 1 | 2 | 3 |
+  -------------
+  | 4 | 5 | 6 |
+  -------------
+  | 7 | 8 | 9 |
+  -------------
+```
+
+Area 1/3/9/7 use a 90-degree rotating pattern.
+Area 1/3/9/7 use another 90-degree rotating pattern.
+Area 5 uses a random pattern.
+
+The Patched Fix: make the image left-right mirrored to get rid of something like "swastika"
+*/
+
+// draw blocks to the paletted
+// c: the block drawer for the center block
+// b1,b2: the block drawers for other blocks (around the center block)
+// b1Angle,b2Angle: the angle for the rotation of b1/b2
+func drawBlocks(p *image.Paletted, size int, c, b1, b2 blockFunc, b1Angle, b2Angle int) {
+	nextAngle := func(a int) int {
+		return (a + 1) % 4
 	}
-	h := icon.h.Sum64()
 
-	// Generate foreground color with better contrast
-	hue := float64(h%360) / 360.0
-	saturation := 0.5 + float64(h%1000)/2000.0
-	brightness := 0.5 + float64(h%1000)/2000.0
+	padding := (size % 3) / 2 // in cased the size can not be aligned by 3 blocks.
 
-	r, g, b := hsvToRgb(hue, saturation, brightness)
-	fgColor := color.RGBA{
-		R: uint8(r * 255),
-		G: uint8(g * 255),
-		B: uint8(b * 255),
-		A: 255,
-	}
+	blockSize := size / 3
+	twoBlockSize := 2 * blockSize
 
-	// Background color (light neutral color)
-	bgColor := color.RGBA{R: 240, G: 240, B: 240, A: 255}
+	// center
+	c(p, blockSize+padding, blockSize+padding, blockSize, 0)
 
-	// Create image and fill with background color
-	img := image.NewRGBA(image.Rect(0, 0, icon.maxX, icon.maxY))
-	draw.Draw(img, img.Bounds(), &image.Uniform{C: bgColor}, image.Point{}, draw.Src)
+	// left top (1)
+	b1(p, 0+padding, 0+padding, blockSize, b1Angle)
+	// center top (2)
+	b2(p, blockSize+padding, 0+padding, blockSize, b2Angle)
 
-	// Calculate center area for shapes
-	margin := int(float64(icon.maxX) * 0.1)
-	innerSize := icon.maxX - 2*margin
-	cellSize := innerSize / icon.cols
+	b1Angle = nextAngle(b1Angle)
+	b2Angle = nextAngle(b2Angle)
+	// right top (3)
+	// b1(p, twoBlockSize+padding, 0+padding, blockSize, b1Angle)
+	// right middle (6)
+	// b2(p, twoBlockSize+padding, blockSize+padding, blockSize, b2Angle)
 
-	// Generate a symmetric pattern
-	pattern := generateSymmetricPattern(h, icon.rows, icon.cols)
+	b1Angle = nextAngle(b1Angle)
+	b2Angle = nextAngle(b2Angle)
+	// right bottom (9)
+	// b1(p, twoBlockSize+padding, twoBlockSize+padding, blockSize, b1Angle)
+	// center bottom (8)
+	b2(p, blockSize+padding, twoBlockSize+padding, blockSize, b2Angle)
 
-	// Draw the pattern
-	for y := 0; y < icon.rows; y++ {
-		for x := 0; x < icon.cols; x++ {
-			if pattern[y][x] {
-				drawShape(img, x, y, cellSize, margin, fgColor, int(h%7))
-			}
+	b1Angle = nextAngle(b1Angle)
+	b2Angle = nextAngle(b2Angle)
+	// lef bottom (7)
+	b1(p, 0+padding, twoBlockSize+padding, blockSize, b1Angle)
+	// left middle (4)
+	b2(p, 0+padding, blockSize+padding, blockSize, b2Angle)
+
+	// then we make it left-right mirror, so we didn't draw 3/6/9 before
+	for x := 0; x < size/2; x++ {
+		for y := 0; y < size; y++ {
+			p.SetColorIndex(size-x, y, p.ColorIndexAt(x, y))
 		}
 	}
-
-	return img
-}
-
-// Generate a symmetric pattern based on the hash
-func generateSymmetricPattern(hash uint64, rows, cols int) [][]bool {
-	pattern := make([][]bool, rows)
-	for i := range pattern {
-		pattern[i] = make([]bool, cols)
-	}
-
-	// Generate the left half (or slightly more than half for odd dimensions)
-	middleCol := cols / 2
-	if cols%2 == 1 {
-		middleCol++
-	}
-
-	// Fill the left part of the pattern
-	bits := hash
-	for y := 0; y < rows; y++ {
-		for x := 0; x < middleCol; x++ {
-			pattern[y][x] = (bits & 1) == 1
-			bits >>= 1
-
-			// Mirror horizontally (left to right)
-			if x < cols/2 {
-				pattern[y][cols-x-1] = pattern[y][x]
-			}
-		}
-	}
-
-	return pattern
-}
-
-// Draw a shape at the specified position
-func drawShape(img *image.RGBA, x, y, cellSize, margin int, color color.RGBA, shapeType int) {
-	startX := margin + x*cellSize
-	startY := margin + y*cellSize
-
-	switch shapeType {
-	case 0:
-		// Fill square
-		drawRect(img, startX, startY, cellSize, cellSize, color)
-	case 1:
-		// Circle
-		drawCircle(img, startX+cellSize/2, startY+cellSize/2, cellSize/2, color)
-	case 2:
-		// Diamond
-		drawDiamond(img, startX, startY, cellSize, color)
-	case 3:
-		// Triangle pointing up
-		drawTriangle(img, startX, startY, cellSize, 0, color)
-	case 4:
-		// Triangle pointing right
-		drawTriangle(img, startX, startY, cellSize, 1, color)
-	case 5:
-		// Triangle pointing down
-		drawTriangle(img, startX, startY, cellSize, 2, color)
-	case 6:
-		// Triangle pointing left
-		drawTriangle(img, startX, startY, cellSize, 3, color)
-	}
-}
-
-// Draw a filled rectangle
-func drawRect(img *image.RGBA, x, y, width, height int, color color.RGBA) {
-	for dy := 0; dy < height; dy++ {
-		for dx := 0; dx < width; dx++ {
-			img.Set(x+dx, y+dy, color)
-		}
-	}
-}
-
-// Draw a filled circle
-func drawCircle(img *image.RGBA, centerX, centerY, radius int, color color.RGBA) {
-	for dy := -radius; dy <= radius; dy++ {
-		for dx := -radius; dx <= radius; dx++ {
-			if dx*dx+dy*dy <= radius*radius {
-				img.Set(centerX+dx, centerY+dy, color)
-			}
-		}
-	}
-}
-
-// Draw a filled diamond
-func drawDiamond(img *image.RGBA, x, y, size int, color color.RGBA) {
-	halfSize := size / 2
-	centerX := x + halfSize
-	centerY := y + halfSize
-
-	for dy := 0; dy < size; dy++ {
-		width := size - abs(dy-halfSize)*2
-		startX := centerX - width/2
-
-		for dx := 0; dx < width; dx++ {
-			img.Set(startX+dx, centerY+(dy-halfSize), color)
-		}
-	}
-}
-
-// Draw a filled triangle with specified orientation (0=up, 1=right, 2=down, 3=left)
-func drawTriangle(img *image.RGBA, x, y, size, orientation int, color color.RGBA) {
-	switch orientation {
-	case 0: // Up
-		for dy := 0; dy < size; dy++ {
-			width := size - dy*2
-			startX := x + dy
-			for dx := 0; dx < width; dx++ {
-				img.Set(startX+dx, y+size-dy-1, color)
-			}
-		}
-	case 1: // Right
-		for dx := 0; dx < size; dx++ {
-			height := size - dx*2
-			startY := y + dx
-			for dy := 0; dy < height; dy++ {
-				img.Set(x+dx, startY+dy, color)
-			}
-		}
-	case 2: // Down
-		for dy := 0; dy < size; dy++ {
-			width := size - dy*2
-			startX := x + dy
-			for dx := 0; dx < width; dx++ {
-				img.Set(startX+dx, y+dy, color)
-			}
-		}
-	case 3: // Left
-		for dx := 0; dx < size; dx++ {
-			height := size - dx*2
-			startY := y + dx
-			for dy := 0; dy < height; dy++ {
-				img.Set(x+size-dx-1, startY+dy, color)
-			}
-		}
-	}
-}
-
-// HSV to RGB conversion for better color generation
-func hsvToRgb(h, s, v float64) (r, g, b float64) {
-	if s == 0 {
-		return v, v, v
-	}
-
-	h *= 6
-	i := math.Floor(h)
-	f := h - i
-	p := v * (1 - s)
-	q := v * (1 - s*f)
-	t := v * (1 - s*(1-f))
-
-	switch int(i) % 6 {
-	case 0:
-		return v, t, p
-	case 1:
-		return q, v, p
-	case 2:
-		return p, v, t
-	case 3:
-		return p, q, v
-	case 4:
-		return t, p, v
-	default:
-		return v, p, q
-	}
-}
-
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
